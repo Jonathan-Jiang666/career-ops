@@ -130,11 +130,101 @@ function buildTitleFilter(titleFilter) {
   };
 }
 
+// ── Stack/body filter ───────────────────────────────────────────────
+// Optional negative/positive filter over whatever text providers expose beyond
+// the title, such as ATS descriptions. Negative-only is safest for broad scans:
+// it blocks clearly bad stacks (C#/.NET/PHP) without requiring every ATS to
+// provide full JD text.
+function buildStackFilter(stackFilter) {
+  if (!stackFilter) return () => true;
+  const positive = normalizeKeywordList(stackFilter.positive);
+  const negative = normalizeKeywordList(stackFilter.negative);
+
+  return (job) => {
+    const text = [
+      job.title,
+      job.location,
+      job.description,
+      job.content,
+      job.department,
+      job.team,
+    ].filter(Boolean).join('\n').toLowerCase();
+
+    if (negative.length > 0 && negative.some(k => keywordMatches(text, k))) return false;
+    if (positive.length === 0) return true;
+    return positive.some(k => keywordMatches(text, k));
+  };
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function keywordMatches(text, keyword) {
+  if (!keyword) return false;
+  if (!/^[a-z0-9]/i.test(keyword) || !/[a-z0-9]$/i.test(keyword)) {
+    return text.includes(keyword);
+  }
+  const pattern = new RegExp(`(^|[^a-z0-9])${escapeRegExp(keyword)}($|[^a-z0-9])`, 'i');
+  return pattern.test(text);
+}
+
+// ── Freshness filter ────────────────────────────────────────────────
+// If a provider exposes posting age, keep only recently published roles.
+// Unknown age is allowed for never-seen URLs because many ATS APIs do not
+// expose publish dates. For URLs already seen with transient statuses
+// (expired/no-apply), require a recent posting signal before re-showing them.
+function buildFreshnessPolicy(freshnessFilter) {
+  const maxPostedAgeDays = Number(freshnessFilter?.max_posted_age_days);
+  const enabled = Number.isFinite(maxPostedAgeDays) && maxPostedAgeDays >= 0;
+  const requireRecentForRecheckableHistory = freshnessFilter?.require_recent_for_recheckable_history !== false;
+
+  function ageDays(job) {
+    if (Number.isFinite(job.postedAgeDays)) return Number(job.postedAgeDays);
+    return parsePostedAgeDays(job.postedOn || job.postedText || '');
+  }
+
+  return {
+    enabled,
+    maxPostedAgeDays,
+    requireRecentForRecheckableHistory,
+    isFresh(job) {
+      if (!enabled) return true;
+      const age = ageDays(job);
+      if (age == null) return true;
+      return age <= maxPostedAgeDays;
+    },
+    hasFreshSignal(job) {
+      if (!enabled) return true;
+      const age = ageDays(job);
+      return age != null && age <= maxPostedAgeDays;
+    },
+  };
+}
+
+function parsePostedAgeDays(postedOn) {
+  const value = String(postedOn || '').trim().toLowerCase();
+  if (!value) return null;
+  if (value.includes('today')) return 0;
+  if (value.includes('yesterday')) return 1;
+
+  const dayMatch = value.match(/(\d+)\s+days?\s+ago/);
+  if (dayMatch) return Number(dayMatch[1]);
+
+  const weekMatch = value.match(/(\d+)\s+weeks?\s+ago/);
+  if (weekMatch) return Number(weekMatch[1]) * 7;
+
+  const monthMatch = value.match(/(\d+)\s+months?\s+ago/);
+  if (monthMatch) return Number(monthMatch[1]) * 30;
+
+  return null;
+}
+
 // ── Location filter ─────────────────────────────────────────────────
 // Optional. If `location_filter` is absent from portals.yml, all locations pass.
 // Semantics (case-insensitive substring, in this order):
-//   - Empty / whitespace-only / non-string location → pass (don't penalize
-//     missing or malformed provider data)
+//   - Empty / whitespace-only / non-string location -> pass by default, or
+//     reject when `allow_missing: false`
 //   - `always_allow` matches → pass (takes precedence over `block` — lets a
 //     multi-location string like "Remote, Belgium or France" through because
 //     the home region is an option, even though "france" is blocked)
@@ -159,12 +249,13 @@ function normalizeKeywordList(value) {
 
 export function buildLocationFilter(locationFilter) {
   if (!locationFilter) return () => true;
+  const allowMissing = locationFilter.allow_missing !== false;
   const alwaysAllow = normalizeKeywordList(locationFilter.always_allow);
   const allow = normalizeKeywordList(locationFilter.allow);
   const block = normalizeKeywordList(locationFilter.block);
 
   return (location) => {
-    if (typeof location !== 'string' || location.trim() === '') return true;
+    if (typeof location !== 'string' || location.trim() === '') return allowMissing;
     const lower = location.toLowerCase();
     if (alwaysAllow.length > 0 && alwaysAllow.some(k => lower.includes(k))) return true;
     if (block.length > 0 && block.some(k => lower.includes(k))) return false;
@@ -175,17 +266,24 @@ export function buildLocationFilter(locationFilter) {
 
 // ── Dedup ───────────────────────────────────────────────────────────
 
+function loadHistoryByUrl() {
+  const history = new Map();
+  if (!existsSync(SCAN_HISTORY_PATH)) return history;
+
+  const lines = readFileSync(SCAN_HISTORY_PATH, 'utf-8').split('\n');
+  for (const line of lines.slice(1)) {
+    if (!line.trim()) continue;
+    const [url, firstSeen, portal, title, company, status, location] = line.split('\t');
+    if (!url) continue;
+    if (!history.has(url)) history.set(url, []);
+    history.get(url).push({ url, firstSeen, portal, title, company, status, location });
+  }
+
+  return history;
+}
+
 function loadSeenUrls() {
   const seen = new Set();
-
-  // scan-history.tsv
-  if (existsSync(SCAN_HISTORY_PATH)) {
-    const lines = readFileSync(SCAN_HISTORY_PATH, 'utf-8').split('\n');
-    for (const line of lines.slice(1)) { // skip header
-      const url = line.split('\t')[0];
-      if (url) seen.add(url);
-    }
-  }
 
   // pipeline.md — extract URLs from checkbox lines
   if (existsSync(PIPELINE_PATH)) {
@@ -205,6 +303,19 @@ function loadSeenUrls() {
 
   return seen;
 }
+
+function shouldSkipHistory(entries, job, freshnessPolicy) {
+  if (!entries || entries.length === 0) return false;
+  const hasBlockingStatus = entries.some(entry => !NON_BLOCKING_HISTORY_STATUSES.has(entry.status || ''));
+  if (hasBlockingStatus) return true;
+  if (!freshnessPolicy.requireRecentForRecheckableHistory) return false;
+  return !freshnessPolicy.hasFreshSignal(job);
+}
+
+const NON_BLOCKING_HISTORY_STATUSES = new Set([
+  'skipped_expired',
+  'skipped_no_apply_control',
+]);
 
 function loadSeenCompanyRoles() {
   const seen = new Set();
@@ -398,6 +509,8 @@ async function main() {
   const companies = config.tracked_companies || [];
   const titleFilter = buildTitleFilter(config.title_filter);
   const locationFilter = buildLocationFilter(config.location_filter);
+  const stackFilter = buildStackFilter(config.stack_filter);
+  const freshnessPolicy = buildFreshnessPolicy(config.freshness_filter);
 
   // 3. Resolve a provider for each enabled company
   const targets = [];
@@ -422,6 +535,7 @@ async function main() {
   if (dryRun) console.log('(dry run — no files will be written)\n');
 
   // 4. Load dedup sets
+  const historyByUrl = loadHistoryByUrl();
   const seenUrls = loadSeenUrls();
   const seenCompanyRoles = loadSeenCompanyRoles();
 
@@ -430,6 +544,8 @@ async function main() {
   let totalFound = 0;
   let totalFilteredTitle = 0;
   let totalFilteredLocation = 0;
+  let totalFilteredStack = 0;
+  let totalFilteredFreshness = 0;
   let totalDupes = 0;
   const newOffers = [];
   const errors = [...resolveErrors];
@@ -468,6 +584,18 @@ async function main() {
           totalFilteredLocation++;
           continue;
         }
+        if (!stackFilter(job)) {
+          totalFilteredStack++;
+          continue;
+        }
+        if (!freshnessPolicy.isFresh(job)) {
+          totalFilteredFreshness++;
+          continue;
+        }
+        if (shouldSkipHistory(historyByUrl.get(job.url), job, freshnessPolicy)) {
+          totalDupes++;
+          continue;
+        }
         if (seenUrls.has(job.url)) {
           totalDupes++;
           continue;
@@ -477,9 +605,9 @@ async function main() {
           totalDupes++;
           continue;
         }
-        // Mark as seen to avoid intra-scan dupes
+        // Mark URL as seen to avoid exact intra-scan dupes. Do not add the
+        // company+title key here: separate requisitions can share a title.
         seenUrls.add(job.url);
-        seenCompanyRoles.add(key);
         newOffers.push({ ...job, source: sourceName });
       }
     } catch (err) {
@@ -540,6 +668,8 @@ async function main() {
   console.log(`Total jobs found:      ${totalFound}`);
   console.log(`Filtered by title:     ${totalFilteredTitle} removed`);
   console.log(`Filtered by location:  ${totalFilteredLocation} removed`);
+  console.log(`Filtered by stack:     ${totalFilteredStack} removed`);
+  console.log(`Filtered by freshness: ${totalFilteredFreshness} removed`);
   console.log(`Duplicates:            ${totalDupes} skipped`);
   if (verify) {
     console.log(`Expired (verified):    ${expiredOffers.length} dropped`);

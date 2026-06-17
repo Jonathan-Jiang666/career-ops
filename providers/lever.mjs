@@ -30,6 +30,16 @@ export default {
       url: j.hostedUrl || '',
       company: entry.name,
       location: j.categories?.location || '',
+      description: [
+        j.descriptionPlain,
+        j.description,
+        j.additionalPlain,
+        ...(Array.isArray(j.lists)
+          ? j.lists.flatMap(list => [list.text, list.content])
+          : []),
+      ].filter(Boolean).join('\n'),
+      department: j.categories?.department || '',
+      team: j.categories?.team || '',
     }));
   },
 };

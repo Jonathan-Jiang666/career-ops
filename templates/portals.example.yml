@@ -63,6 +63,31 @@
 #     - "Brazil"
 #     - "Australia"
 
+# -- Stack/body filter (optional) --
+# Filter scanned jobs by title, location, department/team, and ATS-provided
+# description text when available. Applied AFTER location filter, BEFORE dedup.
+# Negative-only filtering is usually safest: it blocks clearly bad stacks while
+# still allowing providers that do not expose full job descriptions.
+#
+# stack_filter:
+#   positive: []
+#   negative:
+#     - ".NET"
+#     - "C#"
+#     - "PHP"
+#     - "Ruby"
+
+# -- Freshness filter (optional) --
+# If a provider exposes posting age, remove jobs older than this many days.
+# Unknown posting age still passes for never-seen URLs because many ATS APIs do
+# not expose publish dates. For URLs previously seen only as expired/no-apply,
+# `require_recent_for_recheckable_history` prevents old repost-like entries from
+# reappearing unless the provider shows a recent posting signal.
+#
+# freshness_filter:
+#   max_posted_age_days: 7
+#   require_recent_for_recheckable_history: true
+
 # -- Title filter --
 # The scanner uses these keywords to decide if a title is relevant.
 # At least 1 positive must match AND 0 negatives must match (case-insensitive).

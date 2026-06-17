@@ -18,6 +18,9 @@
  * @property {string} company  May be empty when the source can't expose it
  *                             at the list-page level; populated downstream.
  * @property {string} location May be empty.
+ * @property {string} [postedOn] Human-readable posting age/date when exposed
+ *                              by the ATS, e.g. "Posted Yesterday".
+ * @property {number} [postedAgeDays] Parsed age in days when known.
  */
 
 /**

@@ -30,6 +30,13 @@ export default {
       url: j.jobUrl || '',
       company: entry.name,
       location: j.location || '',
+      description: [
+        j.descriptionPlain,
+        j.descriptionHtml,
+        j.description,
+      ].filter(Boolean).join('\n'),
+      department: j.department || '',
+      team: j.team || '',
     }));
   },
 };
