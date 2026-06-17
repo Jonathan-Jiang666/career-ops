@@ -22,7 +22,7 @@ This project reduces manual effort in the job search process so candidates can f
 Career Ops helps automate key parts of a high-volume software engineering job search workflow:
 
 - Collecting job postings
-- Normalising role data
+- Normalizing role data
 - Filtering opportunities by location and relevance
 - Deduplicating previously seen roles
 - Ranking suitable positions
